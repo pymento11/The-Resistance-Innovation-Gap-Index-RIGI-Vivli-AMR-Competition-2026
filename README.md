@@ -1,0 +1,1 @@
+# The-Resistance-Innovation-Gap-Index-RIGI-Vivli-AMR-Competition-2026
