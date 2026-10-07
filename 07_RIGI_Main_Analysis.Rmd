@@ -1,0 +1,1461 @@
+---
+title: "Untitled"
+output: html_document
+date: "2026-07-19"
+---
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(readr)
+library(writexl)
+```
+
+```{r}
+ 
+ 
+Atlas <- read.csv("AMR_combined_harmonized_v2.csv")
+
+names(Atlas)
+
+head(Atlas)
+```
+```{r}
+combined <- Atlas %>%
+  select(
+    1:107,
+    131:135,
+    144:148
+  )
+
+head(
+  combined
+)
+
+colnames(combined)
+```
+Step 1 — Country → Continent mapping
+Apply a standard geoscheme to convert every Country value to Continent. Spot-check the edge cases by hand (Russia, Turkey, territories) rather than trusting an automated library blindly — this is quick but easy to get silently wrong.
+```{r}
+table(combined$Continent)
+table(combined$Country)
+```
+Step 2 — Organism-level filter
+Apply the ≥500 total tested isolates AND ≥2 years with >500 isolates rule. This gives you your candidate organism list.
+```{r}
+library(dplyr)
+
+# ---- Step 1: Build the crosswalk lookup table ----
+# One row per raw organism name -> analysis_group / analysis_unit / tier
+
+organism_lookup <- tribble(
+  ~Organism_clean, ~analysis_group, ~analysis_unit, ~tier,
+
+  # --- Acinetobacter baumannii (primary) ---
+  "Acinetobacter baumannii", "Acinetobacter baumannii", "Acinetobacter baumannii", "Primary",
+
+  # --- Acinetobacter (secondary / sensitivity) ---
+  "Acinetobacter baumannii-calcoaceticus species complex", "Acinetobacter baumannii", "ABC species complex", "Secondary",
+  "Acinetobacter spp.", "Acinetobacter baumannii", "Acinetobacter spp. (unresolved)", "Secondary",
+
+  # --- Pseudomonas aeruginosa (primary) ---
+  "Pseudomonas aeruginosa", "Pseudomonas aeruginosa", "Pseudomonas aeruginosa", "Primary",
+
+  # --- Pseudomonas (secondary) ---
+  "Pseudomonas spp.", "Pseudomonas aeruginosa", "Pseudomonas spp. (unresolved)", "Secondary",
+
+  # --- Enterobacterales: Escherichia ---
+  "Escherichia coli", "Enterobacterales - Escherichia", "Escherichia coli", "Primary",
+  "Escherichia spp.", "Enterobacterales - Escherichia", "Escherichia spp.", "Primary",
+
+  # --- Enterobacterales: Klebsiella ---
+  "Klebsiella pneumoniae", "Enterobacterales - Klebsiella", "Klebsiella pneumoniae", "Primary",
+  "Klebsiella oxytoca", "Enterobacterales - Klebsiella", "Klebsiella oxytoca", "Primary",
+  "Klebsiella aerogenes", "Enterobacterales - Klebsiella", "Klebsiella aerogenes", "Primary",
+  "Klebsiella variicola", "Enterobacterales - Klebsiella", "Klebsiella variicola", "Primary",
+  "Klebsiella spp.", "Enterobacterales - Klebsiella", "Klebsiella spp.", "Primary",
+  "Klebsiella ornithinolytica", "Enterobacterales - Klebsiella", "Klebsiella ornithinolytica", "Primary",
+  "Klebsiella planticola", "Enterobacterales - Klebsiella", "Klebsiella planticola", "Primary",
+  "Klebsiella ozaenae", "Enterobacterales - Klebsiella", "Klebsiella ozaenae", "Primary",
+  "Klebsiella rhinoscleromatis", "Enterobacterales - Klebsiella", "Klebsiella rhinoscleromatis", "Excluded",
+
+  # --- Enterobacterales: Enterobacter (species-complex merged into parent species) ---
+  "Enterobacter cloacae", "Enterobacterales - Enterobacter", "Enterobacter cloacae", "Primary",
+  "Enterobacter cloacae species complex", "Enterobacterales - Enterobacter", "Enterobacter cloacae", "Primary",
+  "Enterobacter hormaechei", "Enterobacterales - Enterobacter", "Enterobacter hormaechei", "Primary",
+  "Enterobacter spp.", "Enterobacterales - Enterobacter", "Enterobacter spp.", "Primary",
+  "Enterobacter kobei", "Enterobacterales - Enterobacter", "Enterobacter kobei", "Primary",
+  "Enterobacter asburiae", "Enterobacterales - Enterobacter", "Enterobacter asburiae", "Primary",
+  "Enterobacter bugandensis", "Enterobacterales - Enterobacter", "Enterobacter bugandensis", "Primary",
+  "Enterobacter ludwigii", "Enterobacterales - Enterobacter", "Enterobacter ludwigii", "Primary",
+  "Enterobacter roggenkampii", "Enterobacterales - Enterobacter", "Enterobacter roggenkampii", "Primary",
+  "Enterobacter xiangfangensis", "Enterobacterales - Enterobacter", "Enterobacter xiangfangensis", "Primary",
+  "Enterobacter cancerogenus", "Enterobacterales - Enterobacter", "Enterobacter cancerogenus", "Excluded",
+  "Enterobacter intermedium", "Enterobacterales - Enterobacter", "Enterobacter intermedium", "Excluded",
+  "Enterobacter liquifaciens", "Enterobacterales - Enterobacter", "Enterobacter liquifaciens", "Excluded",
+
+  # --- Enterobacterales: Serratia (species-complex merged into parent species) ---
+  "Serratia marcescens", "Enterobacterales - Serratia", "Serratia marcescens", "Primary",
+  "Serratia spp.", "Enterobacterales - Serratia", "Serratia spp.", "Primary",
+  "Serratia liquefaciens", "Enterobacterales - Serratia", "Serratia liquefaciens", "Primary",
+  "Serratia liquefaciens complex", "Enterobacterales - Serratia", "Serratia liquefaciens", "Primary",
+  "Serratia ureilytica", "Enterobacterales - Serratia", "Serratia ureilytica", "Primary",
+  "Serratia odorifera", "Enterobacterales - Serratia", "Serratia odorifera", "Primary",
+  "Serratia rubidaea", "Enterobacterales - Serratia", "Serratia rubidaea", "Primary",
+  "Serratia ficaria", "Enterobacterales - Serratia", "Serratia ficaria", "Excluded",
+  "Serratia fonticola", "Enterobacterales - Serratia", "Serratia fonticola", "Excluded",
+  "Serratia grimesii", "Enterobacterales - Serratia", "Serratia grimesii", "Excluded",
+  "Serratia nematodiphila", "Enterobacterales - Serratia", "Serratia nematodiphila", "Excluded",
+  "Serratia plymuthica", "Enterobacterales - Serratia", "Serratia plymuthica", "Excluded",
+
+  # --- Enterobacterales: Citrobacter (species-complex merged into parent species) ---
+  "Citrobacter freundii", "Enterobacterales - Citrobacter", "Citrobacter freundii", "Primary",
+  "Citrobacter freundii species complex", "Enterobacterales - Citrobacter", "Citrobacter freundii", "Primary",
+  "Citrobacter koseri", "Enterobacterales - Citrobacter", "Citrobacter koseri", "Primary",
+  "Citrobacter spp.", "Enterobacterales - Citrobacter", "Citrobacter spp.", "Primary",
+  "Citrobacter braakii", "Enterobacterales - Citrobacter", "Citrobacter braakii", "Primary",
+  "Citrobacter amalonaticus", "Enterobacterales - Citrobacter", "Citrobacter amalonaticus", "Primary",
+  "Citrobacter farmeri", "Enterobacterales - Citrobacter", "Citrobacter farmeri", "Primary",
+  "Citrobacter sedlakii", "Enterobacterales - Citrobacter", "Citrobacter sedlakii", "Primary",
+  "Citrobacter amalonaticus/farmeri", "Enterobacterales - Citrobacter", "Citrobacter amalonaticus/farmeri", "Excluded",
+  "Citrobacter gillenii", "Enterobacterales - Citrobacter", "Citrobacter gillenii", "Excluded",
+  "Citrobacter murliniae", "Enterobacterales - Citrobacter", "Citrobacter murliniae", "Excluded",
+  "Citrobacter werkmanii", "Enterobacterales - Citrobacter", "Citrobacter werkmanii", "Excluded",
+  "Citrobacter youngae", "Enterobacterales - Citrobacter", "Citrobacter youngae", "Excluded",
+
+  # --- Enterobacterales: Proteus ---
+  "Proteus mirabilis", "Enterobacterales - Proteus", "Proteus mirabilis", "Primary",
+  "Proteus vulgaris", "Enterobacterales - Proteus", "Proteus vulgaris", "Primary",
+  "Proteus spp.", "Enterobacterales - Proteus", "Proteus spp.", "Primary",
+  "Proteus hauseri", "Enterobacterales - Proteus", "Proteus hauseri", "Primary",
+  "Proteus vulgaris group", "Enterobacterales - Proteus", "Proteus vulgaris group", "Primary",
+  "Proteus penneri", "Enterobacterales - Proteus", "Proteus penneri", "Primary",
+
+  # --- Enterobacterales: Providencia ---
+  "Providencia stuartii", "Enterobacterales - Providencia", "Providencia stuartii", "Primary",
+  "Providencia rettgeri", "Enterobacterales - Providencia", "Providencia rettgeri", "Primary",
+  "Providencia spp.", "Enterobacterales - Providencia", "Providencia spp.", "Primary",
+  "Providencia alcalifaciens", "Enterobacterales - Providencia", "Providencia alcalifaciens", "Primary",
+  "Providencia rustigianii", "Enterobacterales - Providencia", "Providencia rustigianii", "Excluded",
+
+  # --- Enterobacterales: Morganella ---
+  "Morganella morganii", "Enterobacterales - Morganella", "Morganella morganii", "Primary",
+  "Morganella spp.", "Enterobacterales - Morganella", "Morganella spp.", "Excluded",
+
+  # --- Enterobacterales: other genera clearing >=50 individually ---
+  "Pantoea agglomerans", "Enterobacterales - Other", "Pantoea agglomerans", "Primary",
+  "Cronobacter sakazakii", "Enterobacterales - Other", "Cronobacter sakazakii", "Primary",
+  "Pluralibacter gergoviae", "Enterobacterales - Other", "Pluralibacter gergoviae", "Primary",
+  "Lelliottia amnigena", "Enterobacterales - Other", "Lelliottia amnigena", "Primary",
+  "Hafnia alvei", "Enterobacterales - Other", "Hafnia alvei", "Primary",
+  "Raoultella spp.", "Enterobacterales - Other", "Raoultella spp.", "Primary",
+
+  # --- Enterobacterales: everything else <50, excluded ---
+  "Pantoea ananatis", "Enterobacterales - Other", "Pantoea ananatis", "Excluded",
+  "Pantoea anthophila", "Enterobacterales - Other", "Pantoea anthophila", "Excluded",
+  "Pantoea calida", "Enterobacterales - Other", "Pantoea calida", "Excluded",
+  "Pantoea dispersa", "Enterobacterales - Other", "Pantoea dispersa", "Excluded",
+  "Pantoea eucrina", "Enterobacterales - Other", "Pantoea eucrina", "Excluded",
+  "Pantoea piersonii", "Enterobacterales - Other", "Pantoea piersonii", "Excluded",
+  "Pantoea septica", "Enterobacterales - Other", "Pantoea septica", "Excluded",
+  "Pantoea spp.", "Enterobacterales - Other", "Pantoea spp.", "Excluded",
+  "Cronobacter spp.", "Enterobacterales - Other", "Cronobacter spp.", "Excluded",
+  "Raoultella terrigena", "Enterobacterales - Other", "Raoultella terrigena", "Excluded",
+  "Salmonella enterica subsp. enterica serovar typhi", "Enterobacterales - Other", "Salmonella", "Excluded",
+  "Salmonella spp.", "Enterobacterales - Other", "Salmonella", "Excluded",
+  "Kluyvera ascorbata", "Enterobacterales - Other", "Kluyvera ascorbata", "Excluded",
+  "Kosakonia cowanii", "Enterobacterales - Other", "Kosakonia cowanii", "Excluded",
+  "Leclercia adecarboxylata", "Enterobacterales - Other", "Leclercia adecarboxylata", "Excluded",
+  "Mixta calida", "Enterobacterales - Other", "Mixta calida", "Excluded",
+  "Phytobacter diazotrophicus", "Enterobacterales - Other", "Phytobacter diazotrophicus", "Excluded",
+  "Pseudocitrobacter faecalis", "Enterobacterales - Other", "Pseudocitrobacter faecalis", "Excluded",
+  "Rahnella aquatilis", "Enterobacterales - Other", "Rahnella aquatilis", "Excluded",
+  "Yersinia enterocolitica", "Enterobacterales - Other", "Yersinia enterocolitica", "Excluded",
+  "Gram negative rods in the Family Enterobacteriaceae", "Enterobacterales - Other", "Unresolved Enterobacterales", "Excluded",
+
+  # --- Acinetobacter: below-threshold, excluded ---
+  "Acinetobacter anitratus", "Acinetobacter baumannii", "Acinetobacter anitratus", "Excluded"
+)
+
+# ---- Step 2: Join onto the combined dataset ----
+
+combined <- combined %>%
+  left_join(organism_lookup, by = "Organism_clean")
+
+# ---- Step 3: Check for anything in the data that didn't match the lookup ----
+# (should only be non-target organisms -- e.g. Staph, Strep, Enterococcus, etc.
+#  which were never in scope and are expected to show as NA here)
+
+unmatched <- combined %>%
+  filter(is.na(analysis_group)) %>%
+  distinct(Organism_clean)
+
+print(unmatched)   # sanity check -- confirm this list is ONLY out-of-scope organisms
+
+# ---- Step 4: Filter to Primary + Secondary, drop Excluded / true non-target NAs ----
+
+combined_filtered <- combined %>%
+  filter(tier %in% c("Primary", "Secondary"))
+
+# ---- Step 5: Sanity check counts match the crosswalk table ----
+
+combined_filtered %>%
+  count(analysis_group, tier, sort = TRUE)
+
+ 
+```
+```{r}
+combined_filtered_ID<-combined_filtered %>%
+  mutate(ID = row_number())
+combined_filtered <- combined_filtered %>%
+  mutate(ID = row_number()) %>%
+  select(ID, everything(),-Isolate.Id)
+#-Isolate.Id
+```
+
+
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+
+# ============================================================
+# STEP 0: Identify antibiotic MIC columns and their _I pairs
+# ============================================================
+
+interp_cols <- grep("_I$", colnames(combined_filtered), value = TRUE)
+mic_cols    <- sub("_I$", "", interp_cols)
+mic_cols    <- mic_cols[mic_cols %in% colnames(combined_filtered)]  # keep valid pairs only
+interp_cols <- paste0(mic_cols, "_I")
+
+# ============================================================
+# STEP 1a: Reshape wide -> long (one row per isolate x antibiotic)
+# ============================================================
+
+mic_long <- combined_filtered %>%
+  select(ID, Source.Database, Year, Continent, analysis_unit,
+         analysis_group, tier, all_of(mic_cols)) %>%
+  pivot_longer(cols = all_of(mic_cols), names_to = "Antibiotic", values_to = "MIC_raw")
+
+interp_long <- combined_filtered %>%
+  select(ID, all_of(interp_cols)) %>%
+  pivot_longer(cols = all_of(interp_cols), names_to = "Antibiotic", values_to = "CLSI_label") %>%
+  mutate(Antibiotic = sub("_I$", "", Antibiotic))
+
+long_data <- mic_long %>%
+  left_join(interp_long, by = c("ID", "Antibiotic")) %>%
+  filter(!is.na(MIC_raw), MIC_raw != "")   # drop "not tested" cells
+
+# ============================================================
+# STEP 1b: Parse MIC strings into censored log2 intervals
+#   <=X / <X  -> (-Inf, log2(X)]         left-censored
+#   >=X / >X  -> [log2(X), Inf)          right-censored
+#   exact X   -> (log2(X)-1, log2(X)]    doubling-dilution interval
+#               (an "exact" reading of 4 really means true MIC in (2,4])
+# ============================================================
+
+parse_mic <- function(mic_str) {
+  s   <- str_trim(as.character(mic_str))
+  op  <- case_when(
+    str_starts(s, "<=") ~ "le",
+    str_starts(s, ">=") ~ "ge",
+    str_starts(s, "<")  ~ "lt",
+    str_starts(s, ">")  ~ "gt",
+    TRUE ~ "exact"
+  )
+  val     <- suppressWarnings(as.numeric(str_remove(s, "^(<=|>=|<|>)")))
+  log2val <- log2(val)
+
+  lower <- case_when(
+    op %in% c("le", "lt") ~ -Inf,
+    op %in% c("ge", "gt") ~ log2val,
+    op == "exact"         ~ log2val - 1
+  )
+  upper <- case_when(
+    op %in% c("le", "lt") ~ log2val,
+    op %in% c("ge", "gt") ~ Inf,
+    op == "exact"         ~ log2val
+  )
+  tibble(log2_lower = lower, log2_upper = upper, censor_type = op)
+}
+
+long_data <- long_data %>%
+  bind_cols(parse_mic(long_data$MIC_raw)) %>%
+  filter(!is.na(log2_lower) | !is.na(log2_upper))   # drop unparseable strings
+
+# ============================================================
+# STEP 1c: Censoring-aware 2-component EM (per organism-antibiotic group)
+# ============================================================
+
+truncated_moments <- function(mu, sigma, lower, upper) {
+  alpha <- (lower - mu) / sigma
+  beta  <- (upper - mu) / sigma
+
+  phi_a <- ifelse(is.infinite(alpha), 0, dnorm(alpha))
+  phi_b <- ifelse(is.infinite(beta), 0, dnorm(beta))
+  Phi_a <- ifelse(alpha == -Inf, 0, ifelse(alpha == Inf, 1, pnorm(alpha)))
+  Phi_b <- ifelse(beta == -Inf, 0, ifelse(beta == Inf, 1, pnorm(beta)))
+
+  Z <- pmax(Phi_b - Phi_a, 1e-12)
+
+  term1 <- (phi_a - phi_b) / Z
+  Ex    <- mu + sigma * term1
+
+  alpha_term <- ifelse(is.infinite(alpha), 0, alpha * phi_a)
+  beta_term  <- ifelse(is.infinite(beta), 0, beta * phi_b)
+
+  Var <- sigma^2 * (1 + (alpha_term - beta_term) / Z - term1^2)
+  Var <- pmax(Var, 1e-8)
+
+  list(Ex = Ex, Ex2 = Var + Ex^2, Z = Z)
+}
+
+fit_censored_em <- function(lower, upper, max_iter = 200, tol = 1e-6) {
+  mid <- ifelse(is.finite(lower) & is.finite(upper), (lower + upper) / 2,
+         ifelse(is.finite(lower), lower + 1, upper - 1))
+  q <- quantile(mid, probs = c(0.3, 0.7), na.rm = TRUE)
+  mu1 <- unname(q[1]); mu2 <- unname(q[2])
+  sigma1 <- sigma2 <- max(sd(mid, na.rm = TRUE), 0.5)
+  pi1 <- pi2 <- 0.5
+  loglik_prev <- -Inf
+
+  for (iter in 1:max_iter) {
+    m1 <- truncated_moments(mu1, sigma1, lower, upper)
+    m2 <- truncated_moments(mu2, sigma2, lower, upper)
+
+    L1 <- pi1 * m1$Z
+    L2 <- pi2 * m2$Z
+    denom <- pmax(L1 + L2, 1e-300)
+    r2 <- L2 / denom
+    r1 <- 1 - r2
+
+    loglik <- sum(log(denom))
+
+    pi1 <- mean(r1); pi2 <- mean(r2)
+    mu1 <- sum(r1 * m1$Ex) / sum(r1)
+    mu2 <- sum(r2 * m2$Ex) / sum(r2)
+    var1 <- sum(r1 * (m1$Ex2 - 2*mu1*m1$Ex + mu1^2)) / sum(r1)
+    var2 <- sum(r2 * (m2$Ex2 - 2*mu2*m2$Ex + mu2^2)) / sum(r2)
+    sigma1 <- sqrt(max(var1, 1e-4))
+    sigma2 <- sqrt(max(var2, 1e-4))
+
+    if (mu2 < mu1) {  # keep component 2 = resistant (higher mean) by convention
+      tmp<-mu1; mu1<-mu2; mu2<-tmp
+      tmp<-sigma1; sigma1<-sigma2; sigma2<-tmp
+      tmp<-pi1; pi1<-pi2; pi2<-tmp
+      r2 <- 1 - r2
+    }
+
+    if (abs(loglik - loglik_prev) < tol) break
+    loglik_prev <- loglik
+  }
+
+  list(mu_S = mu1, sigma_S = sigma1, mu_R = mu2, sigma_R = sigma2,
+       pi_R = pi2, posterior_R = r2, loglik = loglik, iterations = iter)
+}
+
+# ============================================================
+# STEP 1d: Fit EM per organism-antibiotic group (pooled across source & continent),
+#          only for groups meeting the EM-fit threshold (n >= 50)
+# ============================================================
+
+em_input <- long_data %>%
+  group_by(analysis_unit, Antibiotic) %>%
+  filter(n() >= 50) %>%
+  ungroup()
+
+group_keys <- em_input %>% distinct(analysis_unit, Antibiotic)
+cat("Fitting EM for", nrow(group_keys), "organism-antibiotic pairs...\n")
+
+em_long <- em_input %>%
+  group_by(analysis_unit, Antibiotic) %>%
+  group_modify(~ {
+    fit <- tryCatch(fit_censored_em(.x$log2_lower, .x$log2_upper), error = function(e) NULL)
+    if (is.null(fit)) {
+      .x$posterior_R <- NA_real_
+    } else {
+      .x$posterior_R <- fit$posterior_R
+    }
+    .x
+  }) %>%
+  ungroup() %>%
+  filter(!is.na(posterior_R))
+
+# ============================================================
+# STEP 1e: Threshold posterior, clean CLSI labels, compute agreement + kappa
+# ============================================================
+
+cohen_kappa <- function(x, y) {
+  tab <- table(x, y)
+  if (nrow(tab) < 2 | ncol(tab) < 2) return(NA_real_)
+  n <- sum(tab)
+  po <- sum(diag(tab)) / n
+  pe <- sum(rowSums(tab) * colSums(tab)) / n^2
+  (po - pe) / (1 - pe)
+}
+
+em_long <- em_long %>%
+  mutate(
+    EM_call = if_else(posterior_R > 0.5, "Resistant", "Susceptible"),
+    CLSI_label_clean = case_when(
+      str_detect(CLSI_label, regex("resist", ignore_case = TRUE))  ~ "Resistant",
+      str_detect(CLSI_label, regex("suscept", ignore_case = TRUE)) ~ "Susceptible",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(CLSI_label_clean))
+
+# ============================================================
+# STEP 1f: OUTPUT TABLE — organism x antibiotic x source
+# ============================================================
+
+step1_comparison_table <- em_long %>%
+  group_by(analysis_unit, Antibiotic, Source.Database) %>%
+  summarise(
+    N = n(),
+    raw_agreement = mean(EM_call == CLSI_label_clean),
+    kappa = cohen_kappa(EM_call, CLSI_label_clean),
+    .groups = "drop"
+  ) %>%
+  arrange(kappa)
+
+print(step1_comparison_table, n = 100)
+```
+```{r}
+step1_diagnostics <- em_long %>%
+  group_by(analysis_unit, Antibiotic, Source.Database) %>%
+  summarise(
+    N = n(),
+    CLSI_pct_resistant = mean(CLSI_label_clean == "Resistant"),
+    EM_pi_R = mean(posterior_R > 0.5),   # approx mixing weight
+    raw_agreement = mean(EM_call == CLSI_label_clean),
+    kappa = cohen_kappa(EM_call, CLSI_label_clean),
+    .groups = "drop"
+  ) %>%
+  arrange(kappa)
+
+print(step1_diagnostics, n = 50)
+
+#write.csv(step1_diagnostics,"step1_diagnostics.csv")
+```
+```{r}
+step1_flagged <- step1_diagnostics %>%
+  mutate(
+    em_degenerate = EM_pi_R < 0.05 | EM_pi_R > 0.95,
+    clsi_extreme_prevalence = CLSI_pct_resistant < 0.05 | CLSI_pct_resistant > 0.95,
+    flag_reason = case_when(
+      em_degenerate & clsi_extreme_prevalence ~ "Unimodal population -- 2-cluster GMM not meaningful",
+      !em_degenerate & clsi_extreme_prevalence ~ "Extreme prevalence -- kappa unstable, use raw agreement/PABAK instead",
+      TRUE ~ "OK for kappa validation"
+    )
+  )
+
+step1_flagged %>% count(flag_reason)
+```
+
+```{r}
+# ============================================================
+# Apply the three-way flag from the diagnostic check
+# ============================================================
+
+step1_flagged <- step1_diagnostics %>%
+  mutate(
+    em_degenerate = EM_pi_R < 0.05 | EM_pi_R > 0.95,
+    clsi_extreme_prevalence = CLSI_pct_resistant < 0.05 | CLSI_pct_resistant > 0.95,
+    flag_reason = case_when(
+      em_degenerate & clsi_extreme_prevalence ~ "Unimodal population",
+      !em_degenerate & clsi_extreme_prevalence ~ "Extreme prevalence (kappa unstable)",
+      TRUE ~ "OK for kappa validation"
+    )
+  )
+
+# ============================================================
+# Category 1: "Unimodal population" (n=319)
+#   -> 2-component GMM isn't a meaningful model here; kappa is
+#      not interpretable, EM should NOT be used to judge this
+#      pair's label reliability at all.
+#   -> DECISION: for these pairs, skip the EM-vs-label validation
+#      entirely and just keep whichever original R/S label the
+#      source already provided (ATLAS provider / KEYSTONE hand-
+#      collected) -- there's no ambiguity to resolve here since
+#      near-unanimous prevalence isn't a labeling reliability
+#      question in the first place.
+# ============================================================
+
+unimodal_pairs <- step1_flagged %>%
+  filter(flag_reason == "Unimodal population") %>%
+  select(analysis_unit, Antibiotic, Source.Database) %>%
+  mutate(secondary_label_source = "original_CLSI_label",
+         validation_note = "Unimodal MIC distribution -- GMM not meaningful, kappa not computed, original label used as-is")
+
+# ============================================================
+# Category 2: "Extreme prevalence" (n=227)
+#   -> Real bimodal-ish structure MAY exist, but standard kappa
+#      is mathematically unstable near extreme base rates (can
+#      be negative even with good raw agreement).
+#   -> DECISION: use raw_agreement as the decision metric for
+#      these instead of kappa. Threshold: raw_agreement >= 0.85
+#      as a reasonable bar (adjust if you want something stricter/
+#      looser -- there's no ERI-style precedent for this specific
+#      number, so treat it as a stated, defensible choice, not
+#      a borrowed one).
+# ============================================================
+
+extreme_prevalence_pairs <- step1_flagged %>%
+  filter(flag_reason == "Extreme prevalence (kappa unstable)") %>%
+  mutate(
+    secondary_label_source = if_else(raw_agreement >= 0.85,
+                                       "original_CLSI_label",
+                                       "EM_thresholded_substitute"),
+    validation_note = "Extreme prevalence -- evaluated via raw agreement (kappa unreliable at this base rate)"
+  ) %>%
+  select(analysis_unit, Antibiotic, Source.Database, secondary_label_source, validation_note)
+
+# ============================================================
+# Category 3: "OK for kappa validation" (n=707)
+#   -> Standard decision rule applies: kappa >= 0.6 keeps the
+#      original label; below that, substitute EM's thresholded
+#      call and flag for manual CLSI re-verification if time
+#      allows.
+# ============================================================
+
+ok_pairs <- step1_flagged %>%
+  filter(flag_reason == "OK for kappa validation") %>%
+  mutate(
+    secondary_label_source = if_else(kappa >= 0.6,
+                                       "original_CLSI_label",
+                                       "EM_thresholded_substitute"),
+    validation_note = if_else(kappa >= 0.6,
+                                "Kappa >= 0.6 -- label accepted",
+                                "Kappa < 0.6 -- flagged for manual CLSI re-verification; EM substitute used in the meantime")
+  ) %>%
+  select(analysis_unit, Antibiotic, Source.Database, secondary_label_source, validation_note)
+
+# ============================================================
+# Combine into one master decision table -- this is what
+# Step 8 (aggregation) will join against to know which label
+# to use for the binary/secondary track, per organism-
+# antibiotic-source group.
+# ============================================================
+
+label_decision_table <- bind_rows(unimodal_pairs, extreme_prevalence_pairs, ok_pairs)
+
+# Quick summary of how the decision landed across categories
+label_decision_table %>% count(secondary_label_source)
+
+# Save it -- you'll join this onto em_long/long_data at the
+# aggregation step to pick the right label per group
+#write.csv(label_decision_table, "label_decision_table.csv", row.names = FALSE)
+```
+
+
+
+Step 3 — Frequency table
+Run organism counts unfiltered (no category constraint yet), then overlay your three target categories (Enterobacteriaceae, A. baumannii, P. aeruginosa) as a lens. This tells you: which of the three categories actually clear Step 2, and what your provisional top-N organism list looks like. This is the current hard blocker — nothing else below can start until this exists.
+```{r}
+# ============================================================
+# Exclude the 319 "Unimodal population" pairs from the PRIMARY
+# R-MIC pipeline entirely. They stay excluded from AAPC/joinpoint/
+# hierarchical model -- not from the raw dataset, just from the
+# primary resistance-acceleration analysis.
+# ============================================================
+
+# Pairs to exclude (organism-antibiotic-source level)
+unimodal_exclusions <- label_decision_table %>%
+  filter(validation_note == "Unimodal MIC distribution -- GMM not meaningful, kappa not computed, original label used as-is") %>%
+  select(analysis_unit, Antibiotic, Source.Database) %>%
+  distinct()
+
+# Apply exclusion to the aggregation input (em_long) before it
+# feeds Step 8 (aggregation) / Step 9 (primary hierarchical model)
+em_long_primary <- em_long %>%
+  anti_join(unimodal_exclusions, by = c("analysis_unit", "Antibiotic", "Source.Database"))
+
+# Quick check on what's left
+cat("Organism-antibiotic-source groups before exclusion:",
+    n_distinct(em_long %>% select(analysis_unit, Antibiotic, Source.Database)), "\n")
+cat("Organism-antibiotic-source groups after exclusion:",
+    n_distinct(em_long_primary %>% select(analysis_unit, Antibiotic, Source.Database)), "\n")
+
+# Keep a record of what was excluded and why -- this is your
+# methods/limitations documentation, not just a working file
+#write.csv(unimodal_exclusions, "excluded_unimodal_pairs.csv", row.names = FALSE)
+```
+
+```{r}
+# ============================================================
+# Confirm the exclusion applied correctly
+# ============================================================
+
+# Count of organism-antibiotic-source groups BEFORE exclusion
+n_before <- em_long %>%
+  distinct(analysis_unit, Antibiotic, Source.Database) %>%
+  nrow()
+
+# Count of organism-antibiotic-source groups AFTER exclusion
+n_after <- em_long_primary %>%
+  distinct(analysis_unit, Antibiotic, Source.Database) %>%
+  nrow()
+
+# Count of groups flagged for exclusion
+n_excluded <- unimodal_exclusions %>%
+  distinct(analysis_unit, Antibiotic, Source.Database) %>%
+  nrow()
+
+cat("Groups before exclusion: ", n_before, "\n")
+cat("Groups flagged to exclude:", n_excluded, "\n")
+cat("Groups after exclusion:  ", n_after, "\n")
+cat("Expected after (before - excluded):", n_before - n_excluded, "\n")
+cat("Match?", (n_before - n_excluded) == n_after, "\n")
+
+# ============================================================
+# Double-check: none of the excluded groups still appear
+# in em_long_primary (should return 0 rows)
+# ============================================================
+
+leftover_check <- em_long_primary %>%
+  distinct(analysis_unit, Antibiotic, Source.Database) %>%
+  inner_join(unimodal_exclusions, by = c("analysis_unit", "Antibiotic", "Source.Database"))
+
+cat("Excluded groups still present in em_long_primary (should be 0):", nrow(leftover_check), "\n")
+
+# ============================================================
+# Isolate-level check: how many rows (isolates) were dropped,
+# not just groups -- useful for the methods writeup
+# ============================================================
+
+isolates_before <- nrow(em_long)
+isolates_after  <- nrow(em_long_primary)
+
+cat("\nIsolates before exclusion:", isolates_before, "\n")
+cat("Isolates after exclusion: ", isolates_after, "\n")
+cat("Isolates removed:         ", isolates_before - isolates_after,
+    sprintf("(%.1f%% of total)", 100 * (isolates_before - isolates_after) / isolates_before), "\n")
+```
+```{r}
+# ============================================================
+# STEP 8 — Aggregate to organism x antibiotic x continent x year cells
+#
+# INSERT: right after the unimodal-exclusion step (the block that
+# produced em_long_primary via anti_join with unimodal_exclusions).
+# Do NOT run the label-join code from the last few messages --
+# that entire branch is being skipped per the simplification.
+#
+# Uses em_long_primary as-is: posterior_R (primary signal) and
+# CLSI_label_clean (secondary signal, original label, no substitution).
+# ============================================================
+
+library(dplyr)
+
+CELL_THRESHOLD <- 50   # decided: organism x antibiotic x continent x year >= 50
+
+# ---- Add a point-estimate log2 MIC per isolate, for the primary
+#      "R-cluster mean MIC" signal (posterior-weighted average) ----
+# Uses the midpoint of the censored interval; for one-sided censored
+# values (>X or <=X with no finite far bound) falls back to the
+# finite bound +/- 1 as a conservative point estimate.
+
+em_long_primary <- em_long_primary %>%
+  mutate(
+    MIC_point = case_when(
+      is.finite(log2_lower) & is.finite(log2_upper) ~ (log2_lower + log2_upper) / 2,
+      is.finite(log2_lower) & !is.finite(log2_upper) ~ log2_lower + 1,   # right-censored (>X)
+      !is.finite(log2_lower) & is.finite(log2_upper) ~ log2_upper - 1,   # left-censored (<=X)
+      TRUE ~ NA_real_
+    )
+  )
+
+# ---- Aggregate: one row per organism x antibiotic x continent x year ----
+
+cell_aggregates <- em_long_primary %>%
+  group_by(analysis_unit, Antibiotic, Continent, Year) %>%
+  summarise(
+    N = n(),
+
+    # PRIMARY signal
+    R_proportion_weighted = mean(posterior_R),
+    R_mean_MIC_weighted   = sum(posterior_R * MIC_point) / sum(posterior_R),
+
+    # SECONDARY signal (original label, no substitution)
+    N_labeled          = sum(!is.na(CLSI_label_clean)),
+    binary_R_proportion = mean(CLSI_label_clean == "Resistant", na.rm = TRUE),
+
+    .groups = "drop"
+  ) %>%
+  filter(N >= CELL_THRESHOLD)
+
+# ---- Quick check on what survived ----
+cat("Cells before threshold:",
+    em_long_primary %>% distinct(analysis_unit, Antibiotic, Continent, Year) %>% nrow(), "\n")
+cat("Cells after >=50 threshold:", nrow(cell_aggregates), "\n")
+
+# Save -- this is the direct input to Step 9 (hierarchical model)
+# and Step 10 (joinpoint sensitivity)
+#write.csv(cell_aggregates, "cell_aggregates.csv", row.names = FALSE)
+```
+```{r}
+ 
+em_long_primary<-em_long_primary %>%
+  left_join(
+    combined_filtered_ID %>% select(ID, Country),
+    by = "ID"
+  )
+```
+
+```{r}
+library(dplyr)
+library(lme4)
+
+CHECKPOINT_DIR <- "rigi_checkpoints"
+dir.create(CHECKPOINT_DIR, showWarnings = FALSE)
+
+# ============================================================
+# STEP 8b — Country-level aggregation (feeds the mixed model)
+#   No hard N threshold here -- the whole point of the
+#   hierarchical model is to let sparse country-years borrow
+#   strength via partial pooling, rather than being excluded.
+# ============================================================
+
+country_year_aggregates <- em_long_primary %>%
+  group_by(analysis_unit, Antibiotic, Continent, Country, Year) %>%
+  summarise(
+    N = n(),
+    R_successes = round(sum(posterior_R)),   # posterior-weighted "success" count
+    .groups = "drop"
+  ) %>%
+  mutate(S_failures = N - R_successes)
+
+saveRDS(country_year_aggregates, file.path(CHECKPOINT_DIR, "country_year_aggregates.rds"))
+cat("Step 8b done. Rows:", nrow(country_year_aggregates), "\n")
+
+# ============================================================
+# STEP 9 — Primary hierarchical logistic model
+#   Fit PER organism-antibiotic pair (same modeling unit as EM).
+#   Checkpointed: each pair's fit is saved individually, and
+#   already-completed pairs are SKIPPED on rerun -- safe to
+#   stop and restart this loop at any point.
+# ============================================================
+
+pairs_to_fit <- country_year_aggregates %>%
+  distinct(analysis_unit, Antibiotic) %>%
+  # only bother fitting pairs with reasonable total volume
+  inner_join(
+    country_year_aggregates %>%
+      group_by(analysis_unit, Antibiotic) %>%
+      summarise(total_N = sum(N), n_years = n_distinct(Year), .groups = "drop") %>%
+      filter(total_N >= 100, n_years >= 3),
+    by = c("analysis_unit", "Antibiotic")
+  )
+
+cat("Pairs queued for Step 9 fitting:", nrow(pairs_to_fit), "\n")
+
+# Progress log -- lets you see what's done without re-scanning the folder
+log_file <- file.path(CHECKPOINT_DIR, "step9_progress_log.csv")
+if (!file.exists(log_file)) {
+  write.csv(data.frame(analysis_unit=character(), Antibiotic=character(),
+                        status=character(), model_type=character(),
+                        timestamp=character()),
+            log_file, row.names = FALSE)
+}
+
+fit_one_pair <- function(unit, antibiotic) {
+  safe_name <- gsub("[^A-Za-z0-9]", "_", paste(unit, antibiotic, sep = "__"))
+  ckpt_path <- file.path(CHECKPOINT_DIR, paste0(safe_name, ".rds"))
+
+  # SKIP if already done -- this is what makes the loop resumable
+  if (file.exists(ckpt_path)) return(invisible(NULL))
+
+  d <- country_year_aggregates %>%
+    filter(analysis_unit == unit, Antibiotic == antibiotic)
+
+  # Standardize year to help convergence
+  d$year_c <- d$Year - median(d$Year)
+
+  result <- tryCatch({
+    # Try random slope first (country-level trend variation)
+    m <- glmer(
+      cbind(R_successes, S_failures) ~ year_c * Continent + (1 + year_c | Continent:Country),
+      data = d, family = binomial,
+      control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5))
+    )
+    list(model = m, model_type = "random_slope", converged = TRUE)
+  }, warning = function(w) {
+    # Fall back to random-intercept-only if slope model doesn't converge cleanly
+    m <- tryCatch(
+      glmer(cbind(R_successes, S_failures) ~ year_c * Continent + (1 | Continent:Country),
+            data = d, family = binomial,
+            control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5))),
+      error = function(e) NULL
+    )
+    list(model = m, model_type = "random_intercept_fallback", converged = !is.null(m))
+  }, error = function(e) {
+    list(model = NULL, model_type = "failed", converged = FALSE, error_msg = conditionMessage(e))
+  })
+
+  saveRDS(list(analysis_unit = unit, antibiotic = antibiotic,
+               data = d, result = result),
+          ckpt_path)
+
+  write.table(
+    data.frame(analysis_unit = unit, Antibiotic = antibiotic,
+               status = if (isTRUE(result$converged)) "OK" else "FAILED",
+               model_type = result$model_type,
+               timestamp = as.character(Sys.time())),
+    log_file, sep = ",", append = TRUE, row.names = FALSE, col.names = FALSE
+  )
+
+  invisible(NULL)
+}
+
+# ---- Run the loop. Safe to interrupt (Ctrl+C / session end) and
+#      re-run this exact block later -- completed pairs are skipped ----
+for (i in seq_len(nrow(pairs_to_fit))) {
+  fit_one_pair(pairs_to_fit$analysis_unit[i], pairs_to_fit$Antibiotic[i])
+  if (i %% 10 == 0) cat("Processed", i, "/", nrow(pairs_to_fit), "pairs\n")
+}
+
+cat("Step 9 loop complete (or paused). Check", log_file, "for status.\n")
+
+# ============================================================
+# CHECK PROGRESS AT ANY TIME (safe to run mid-loop, in a
+# separate console/session, without disturbing the fitting loop):
+# ============================================================
+# progress <- read.csv("rigi_checkpoints/step9_progress_log.csv")
+# table(progress$status)
+# table(progress$model_type)
+
+# ============================================================
+# RESUME instructions (new session / interrupted run):
+#   1. Re-run library(dplyr); library(lme4); CHECKPOINT_DIR line
+#   2. Re-run STEP 8b (or: country_year_aggregates <- readRDS(
+#        file.path(CHECKPOINT_DIR, "country_year_aggregates.rds")))
+#   3. Re-run the "pairs_to_fit" block
+#   4. Re-run the for-loop -- it skips anything already saved in
+#      rigi_checkpoints/ and only fits what's missing
+#   5. Check step9_progress_log.csv for how many succeeded/failed
+# ============================================================
+```
+
+```{r}
+# Quick check: are the failures concentrated in already-known
+# low-volume organisms, or scattered unpredictably?
+
+progress <- read.csv("rigi_checkpoints/step9_progress_log.csv")
+
+failed <- progress %>% filter(status == "FAILED")
+
+# How many antibiotics failed per organism -- if an organism has
+# ALL its antibiotics failing, that's a volume/coverage problem
+# with that organism unit, not a per-drug issue
+failed %>%
+  count(analysis_unit, sort = TRUE)
+
+# Cross-check against total attempted per organism, to see fail RATE
+progress %>%
+  group_by(analysis_unit) %>%
+  summarise(n_total = n(), n_failed = sum(status == "FAILED")) %>%
+  filter(n_failed > 0) %>%
+  arrange(desc(n_failed / n_total))
+```
+
+```{r}
+# ============================================================
+# Handle the two systematic-failure organisms + document
+# the scattered single failures separately
+# ============================================================
+
+# 1. Confirm these two units are simply too thin for the model --
+#    check total isolate volume and continent/year spread
+country_year_aggregates %>%
+  filter(analysis_unit %in% c("Enterobacter xiangfangensis", "Escherichia spp.")) %>%
+  group_by(analysis_unit) %>%
+  summarise(
+    total_isolates = sum(N),
+    n_continents = n_distinct(Continent),
+    n_years = n_distinct(Year)
+  )
+
+# 2. Document all 45 as an explicit exclusion table for the
+#    methods/limitations section -- reasons split by pattern
+excluded_step9 <- progress %>%
+  filter(status == "FAILED") %>%
+  mutate(
+    exclusion_reason = if_else(
+      analysis_unit %in% c("Enterobacter xiangfangensis", "Escherichia spp."),
+      "Systematic: entire organism unit failed to converge (likely insufficient continent/year coverage)",
+      "Isolated: single organism-antibiotic pair failed to converge, likely sparse-cell instability"
+    )
+  ) %>%
+  select(analysis_unit, Antibiotic, exclusion_reason)
+
+#write.csv(excluded_step9, "step9_excluded_pairs.csv", row.names = FALSE)
+```
+
+```{r}
+# ============================================================
+# EXTRACTION — pull trend estimate + 95% CI per organism-antibiotic-
+# continent, from the saved glmer model objects
+# ============================================================
+
+library(purrr)
+
+extract_trend_estimates <- function(ckpt_file) {
+  obj <- readRDS(ckpt_file)
+  m <- obj$result$model
+
+  if (is.null(m) || !isTRUE(obj$result$converged)) return(NULL)
+
+  # Fixed-effect coefficients (log-odds scale)
+  fe <- fixef(m)
+  vc <- vcov(m)
+  continents <- levels(factor(obj$data$Continent))
+  base_continent <- continents[1]  # reference level used by the model
+
+  # For each continent, the year slope = main "year_c" effect
+  # + that continent's interaction term (0 for the reference level)
+  results <- map_dfr(continents, function(cont) {
+    if (cont == base_continent) {
+      slope <- fe["year_c"]
+      se <- sqrt(vc["year_c", "year_c"])
+    } else {
+      inter_term <- paste0("year_c:Continent", cont)
+      if (!(inter_term %in% names(fe))) return(NULL)
+      slope <- fe["year_c"] + fe[inter_term]
+      se <- sqrt(vc["year_c","year_c"] + vc[inter_term,inter_term] +
+                 2*vc["year_c", inter_term])
+    }
+
+    tibble(
+      analysis_unit = obj$analysis_unit,
+      Antibiotic = obj$antibiotic,
+      Continent = cont,
+      log_odds_slope = unname(slope),
+      se = unname(se),
+      # Convert to an APC-equivalent: % change in odds per year
+      APC_equivalent = 100 * (exp(slope) - 1),
+      CI_lower = 100 * (exp(slope - 1.96*se) - 1),
+      CI_upper = 100 * (exp(slope + 1.96*se) - 1),
+      model_type = obj$result$model_type
+    )
+  })
+
+  results
+}
+
+# Run across all checkpoint files
+ckpt_files <- list.files("rigi_checkpoints", pattern = "\\.rds$", full.names = TRUE)
+ckpt_files <- ckpt_files[!grepl("country_year_aggregates", ckpt_files)]
+
+cat("Extracting from", length(ckpt_files), "checkpoint files...\n")
+
+rigi_resistance_estimates <- map_dfr(ckpt_files, extract_trend_estimates)
+
+cat("Extracted rows:", nrow(rigi_resistance_estimates), "\n")
+#write.csv(rigi_resistance_estimates, "rigi_resistance_estimates.csv", row.names = FALSE)
+
+head(rigi_resistance_estimates, 20)
+```
+
+```{r}
+# ============================================================
+# Re-run extraction, capturing whether the vcov warning fired
+# per model, so it's a queryable column instead of console noise
+# ============================================================
+
+extract_trend_estimates_flagged <- function(ckpt_file) {
+  obj <- readRDS(ckpt_file)
+  m <- obj$result$model
+
+  if (is.null(m) || !isTRUE(obj$result$converged)) return(NULL)
+
+  vcov_warning_flag <- FALSE
+  vc <- withCallingHandlers(
+    vcov(m),
+    warning = function(w) {
+      if (grepl("not positive definite|falling back", conditionMessage(w))) {
+        vcov_warning_flag <<- TRUE
+      }
+      invokeRestart("muffleWarning")
+    }
+  )
+
+  fe <- fixef(m)
+  continents <- levels(factor(obj$data$Continent))
+  base_continent <- continents[1]
+
+  map_dfr(continents, function(cont) {
+    if (cont == base_continent) {
+      slope <- fe["year_c"]; se <- sqrt(vc["year_c", "year_c"])
+    } else {
+      inter_term <- paste0("year_c:Continent", cont)
+      if (!(inter_term %in% names(fe))) return(NULL)
+      slope <- fe["year_c"] + fe[inter_term]
+      se <- sqrt(vc["year_c","year_c"] + vc[inter_term,inter_term] +
+                 2*vc["year_c", inter_term])
+    }
+    tibble(
+      analysis_unit = obj$analysis_unit, Antibiotic = obj$antibiotic, Continent = cont,
+      log_odds_slope = unname(slope), se = unname(se),
+      APC_equivalent = 100 * (exp(slope) - 1),
+      CI_lower = 100 * (exp(slope - 1.96*se) - 1),
+      CI_upper = 100 * (exp(slope + 1.96*se) - 1),
+      model_type = obj$result$model_type,
+      vcov_unreliable = vcov_warning_flag   # NEW
+    )
+  })
+}
+
+rigi_resistance_estimates <- map_dfr(ckpt_files, extract_trend_estimates_flagged)
+
+cat("Rows with unreliable vcov flag:", sum(rigi_resistance_estimates$vcov_unreliable), "/",
+    nrow(rigi_resistance_estimates), "\n")
+
+#write.csv(rigi_resistance_estimates, "rigi_resistance_estimates.csv", row.names = FALSE)
+```
+
+
+```{r}
+rigi_resistance_estimates <- rigi_resistance_estimates %>%
+  mutate(
+    ci_width = CI_upper - CI_lower,
+    trend_confidence = case_when(
+      CI_lower > 0 ~ "Confident increase",
+      CI_upper < 0 ~ "Confident decrease",
+      TRUE ~ "Direction uncertain"
+    )
+  )
+
+rigi_resistance_estimates %>% count(trend_confidence)
+```
+
+```{r}
+# Is uncertainty concentrated in thin continents/organisms (expected),
+# or spread evenly across everything (would suggest a real problem
+# with model specification, not just data sparsity)?
+
+rigi_resistance_estimates %>%
+  group_by(Continent) %>%
+  summarise(n = n(), pct_uncertain = mean(trend_confidence == "Direction uncertain")) %>%
+  arrange(desc(pct_uncertain))
+
+rigi_resistance_estimates %>%
+  group_by(analysis_unit) %>%
+  summarise(n = n(), pct_uncertain = mean(trend_confidence == "Direction uncertain")) %>%
+  filter(n >= 5) %>%
+  arrange(desc(pct_uncertain)) %>%
+  head(20)
+```
+
+```{r}
+library(dplyr)
+library(lme4)
+
+# CHECKPOINT_DIR, country_year_aggregates, and pairs_to_fit should
+# already exist from the earlier session -- if starting fresh,
+# reload them:
+# CHECKPOINT_DIR <- "rigi_checkpoints"
+# country_year_aggregates <- readRDS(file.path(CHECKPOINT_DIR, "country_year_aggregates.rds"))
+# (pairs_to_fit: re-run the block that built it, from a few messages back)
+
+# ---- Paste the function definition from my last message here ----
+fit_one_pair_intercept_only <- function(unit, antibiotic) {
+  safe_name <- gsub("[^A-Za-z0-9]", "_", paste(unit, antibiotic, sep = "__"))
+  ckpt_path <- file.path(CHECKPOINT_DIR, paste0("v2_", safe_name, ".rds"))
+  if (file.exists(ckpt_path)) return(invisible(NULL))
+
+  d <- country_year_aggregates %>% filter(analysis_unit == unit, Antibiotic == antibiotic)
+  d$year_c <- d$Year - median(d$Year)
+
+  result <- tryCatch({
+    m <- glmer(cbind(R_successes, S_failures) ~ year_c * Continent + (1 | Continent:Country),
+               data = d, family = binomial,
+               control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+    list(model = m, model_type = "random_intercept", converged = TRUE)
+  }, error = function(e) list(model = NULL, model_type = "failed", converged = FALSE))
+
+  saveRDS(list(analysis_unit = unit, antibiotic = antibiotic, data = d, result = result), ckpt_path)
+  invisible(NULL)
+}
+
+# ---- Run it across every pair (new "v2_" files, old ones untouched) ----
+for (i in seq_len(nrow(pairs_to_fit))) {
+  fit_one_pair_intercept_only(pairs_to_fit$analysis_unit[i], pairs_to_fit$Antibiotic[i])
+  if (i %% 50 == 0) cat("Processed", i, "/", nrow(pairs_to_fit), "\n")
+}
+
+# ---- Re-run extraction, pointed at the NEW checkpoint files only ----
+ckpt_files_v2 <- list.files(CHECKPOINT_DIR, pattern = "^v2_.*\\.rds$", full.names = TRUE)
+rigi_resistance_estimates_v2 <- map_dfr(ckpt_files_v2, extract_trend_estimates_flagged)
+
+rigi_resistance_estimates_v2 <- rigi_resistance_estimates_v2 %>%
+  mutate(trend_confidence = case_when(
+    CI_lower > 0 ~ "Confident increase",
+    CI_upper < 0 ~ "Confident decrease",
+    TRUE ~ "Direction uncertain"
+  ))
+
+rigi_resistance_estimates_v2 %>% count(trend_confidence)
+```
+
+
+```{r}
+# Final resistance-side dataset for Tier 2 reporting
+rigi_resistance_final <- rigi_resistance_estimates_v2
+
+rigi_resistance_final %>%
+  count(trend_confidence) %>%
+  mutate(pct = round(100 * n / sum(n), 1))
+
+#write.csv(rigi_resistance_final, "rigi_resistance_final.csv", row.names = FALSE)
+```
+
+
+```{r}
+global_funding_clean <- read.csv("method1_target_by_year_funding.csv") %>%
+  filter(Year >= 2014, Year <= 2024) %>%  # drop thin early years + incomplete 2025/2026
+  rename(matched_target_category = Category)
+
+global_funding_clean %>%
+  group_by(matched_target_category) %>%
+  summarise(mean_share = mean(share_pct), median_share = median(share_pct))
+```
+
+```{r}
+# ============================================================
+# Fix: derive target_category directly from analysis_unit,
+# using the Enterobacterales genus list from your crosswalk
+# ============================================================
+
+enterobacterales_genera <- c("Escherichia", "Klebsiella", "Enterobacter", "Serratia",
+                              "Citrobacter", "Proteus", "Providencia", "Morganella",
+                              "Pantoea", "Cronobacter", "Pluralibacter", "Lelliottia",
+                              "Hafnia", "Raoultella")
+
+organism_level_resistance <- rigi_resistance_final %>%
+  filter(trend_confidence != "Direction uncertain") %>%
+  mutate(
+    target_category = case_when(
+      analysis_unit == "Acinetobacter baumannii" ~ "Acinetobacter baumannii",
+      analysis_unit == "Pseudomonas aeruginosa" ~ "Pseudomonas aeruginosa",
+      grepl(paste(enterobacterales_genera, collapse = "|"), analysis_unit) ~ "Enterobacteriaceae",
+      TRUE ~ NA_character_   # catches the secondary/sensitivity units: ABC complex, unresolved spp.
+    )
+  ) %>%
+  filter(!is.na(target_category)) %>%
+  group_by(target_category) %>%
+  summarise(
+    n_confident_estimates = n(),
+    n_confident_increase = sum(trend_confidence == "Confident increase"),
+    n_confident_decrease = sum(trend_confidence == "Confident decrease"),
+    pct_estimates_increasing = 100 * n_confident_increase / n_confident_estimates,
+    mean_APC_among_confident = mean(APC_equivalent),
+    .groups = "drop"
+  )
+
+print(organism_level_resistance)
+```
+
+
+```{r}
+rigi_tier1 <- organism_level_resistance %>%
+  left_join(
+    global_funding_clean %>%
+      group_by(matched_target_category) %>%
+      summarise(mean_investment_share = mean(share_pct), .groups = "drop"),
+    by = c("target_category" = "matched_target_category")
+  )
+
+print(rigi_tier1, width = Inf)
+```
+
+
+```{r}
+organism_level_resistance_v2 <- rigi_resistance_final %>%
+  filter(trend_confidence != "Direction uncertain") %>%
+  mutate(target_category = case_when(
+    analysis_unit == "Acinetobacter baumannii" ~ "Acinetobacter baumannii",
+    analysis_unit == "Pseudomonas aeruginosa" ~ "Pseudomonas aeruginosa",
+    grepl(paste(enterobacterales_genera, collapse = "|"), analysis_unit) ~ "Enterobacteriaceae",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(!is.na(target_category)) %>%
+  group_by(target_category) %>%
+  summarise(
+    n_confident = n(),
+    pct_increasing = 100 * mean(trend_confidence == "Confident increase"),
+    mean_APC_among_increasing = mean(APC_equivalent[trend_confidence == "Confident increase"]),
+    mean_APC_among_decreasing = mean(APC_equivalent[trend_confidence == "Confident decrease"]),
+    .groups = "drop"
+  )
+
+print(organism_level_resistance_v2)
+```
+```{r}
+organism_level_resistance_v2 <- organism_level_resistance_v2 %>%
+  mutate(
+    mean_APC_among_increasing = if_else(is.nan(mean_APC_among_increasing),
+                                          NA_real_, mean_APC_among_increasing),
+    severity_note = if_else(pct_increasing == 0,
+                              "No confidently-increasing cells detected",
+                              paste0(round(mean_APC_among_increasing, 1), "% mean APC among increasing cells"))
+  )
+
+print(organism_level_resistance_v2)
+```
+```{r}
+enterobacterales_genera <- c("Escherichia", "Klebsiella", "Enterobacter", "Serratia",
+                              "Citrobacter", "Proteus", "Providencia", "Morganella",
+                              "Pantoea", "Cronobacter", "Pluralibacter", "Lelliottia",
+                              "Hafnia", "Raoultella")
+
+rigi_tier2 <- rigi_resistance_final %>%
+  filter(trend_confidence != "Direction uncertain") %>%
+  mutate(target_category = case_when(
+    analysis_unit == "Acinetobacter baumannii" ~ "Acinetobacter baumannii",
+    analysis_unit == "Pseudomonas aeruginosa" ~ "Pseudomonas aeruginosa",
+    grepl(paste(enterobacterales_genera, collapse = "|"), analysis_unit) ~ "Enterobacteriaceae",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(!is.na(target_category)) %>%
+  group_by(target_category, Continent) %>%
+  summarise(
+    n_confident = n(),
+    pct_increasing = 100 * mean(trend_confidence == "Confident increase"),
+    mean_APC_among_increasing = mean(APC_equivalent[trend_confidence == "Confident increase"]),
+    mean_APC_among_decreasing = mean(APC_equivalent[trend_confidence == "Confident decrease"]),
+    .groups = "drop"
+  ) %>%
+  arrange(target_category, desc(pct_increasing))
+
+print(rigi_tier2, n = 30)
+#write.csv(rigi_tier2, "rigi_tier2_regional.csv", row.names = FALSE)
+```
+```{r}
+# ============================================================
+# Check whether North America's 86.4% mean APC (Enterobacteriaceae,
+# increasing cells) is a broad pattern or driven by a few outliers
+# ============================================================
+
+na_entero_increasing <- rigi_resistance_final %>%
+  filter(trend_confidence == "Confident increase", Continent == "North America") %>%
+  mutate(target_category = case_when(
+    analysis_unit == "Acinetobacter baumannii" ~ "Acinetobacter baumannii",
+    analysis_unit == "Pseudomonas aeruginosa" ~ "Pseudomonas aeruginosa",
+    grepl(paste(enterobacterales_genera, collapse = "|"), analysis_unit) ~ "Enterobacteriaceae",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(target_category == "Enterobacteriaceae") %>%
+  arrange(desc(APC_equivalent))
+
+# How many cells, and what does the distribution actually look like?
+cat("N cells:", nrow(na_entero_increasing), "\n")
+summary(na_entero_increasing$APC_equivalent)
+
+# Top 10 highest APC values -- are a few extreme values pulling the mean up?
+print(na_entero_increasing %>% select(analysis_unit, Antibiotic, APC_equivalent, CI_lower, CI_upper) %>% head(10))
+
+# Median vs mean -- if median is much lower than the 86.4% mean,
+# that's the tell of a right-skewed distribution driven by outliers
+cat("\nMean APC:", mean(na_entero_increasing$APC_equivalent), "\n")
+cat("Median APC:", median(na_entero_increasing$APC_equivalent), "\n")
+
+# Recompute mean EXCLUDING the single most extreme value, as a
+# quick robustness check
+if (nrow(na_entero_increasing) > 1) {
+  trimmed_mean <- na_entero_increasing %>%
+    slice(-1) %>%   # drop the single highest value
+    summarise(mean_APC_excl_top1 = mean(APC_equivalent))
+  print(trimmed_mean)
+}
+```
+
+```{r}
+# Add a CI-width based stability flag on top of the existing
+# direction-based confidence classification
+
+rigi_resistance_final <- rigi_resistance_final %>%
+  mutate(
+    ci_width = CI_upper - CI_lower,
+    stable_estimate = trend_confidence != "Direction uncertain" & ci_width < 100  # threshold: adjust as needed
+  )
+
+# Re-check Enterobacteriaceae/North America using median instead of
+# mean, and also restricted to "stable" estimates only
+
+rigi_resistance_final %>%
+  filter(trend_confidence == "Confident increase", Continent == "North America") %>%
+  mutate(target_category = case_when(
+    analysis_unit == "Acinetobacter baumannii" ~ "Acinetobacter baumannii",
+    analysis_unit == "Pseudomonas aeruginosa" ~ "Pseudomonas aeruginosa",
+    grepl(paste(enterobacterales_genera, collapse = "|"), analysis_unit) ~ "Enterobacteriaceae",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(target_category == "Enterobacteriaceae") %>%
+  summarise(
+    n = n(),
+    n_stable = sum(stable_estimate),
+    mean_all = mean(APC_equivalent),
+    median_all = median(APC_equivalent),
+    mean_stable_only = mean(APC_equivalent[stable_estimate]),
+    median_stable_only = median(APC_equivalent[stable_estimate])
+  )
+```
+
+
+```{r}
+# ============================================================
+# Regenerate Tier 1 (organism-level) and Tier 2 (continent-level)
+# using median APC + stability filter, uniformly
+# ============================================================
+
+rigi_resistance_stable <- rigi_resistance_final %>%
+  mutate(
+    ci_width = CI_upper - CI_lower,
+    stable_estimate = trend_confidence != "Direction uncertain" & ci_width < 100
+  ) %>%
+  mutate(target_category = case_when(
+    analysis_unit == "Acinetobacter baumannii" ~ "Acinetobacter baumannii",
+    analysis_unit == "Pseudomonas aeruginosa" ~ "Pseudomonas aeruginosa",
+    grepl(paste(enterobacterales_genera, collapse = "|"), analysis_unit) ~ "Enterobacteriaceae",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(!is.na(target_category))
+
+# Tier 1, redone
+rigi_tier1_v2 <- rigi_resistance_stable %>%
+  filter(stable_estimate) %>%
+  group_by(target_category) %>%
+  summarise(
+    n_stable = n(),
+    pct_increasing = 100 * mean(trend_confidence == "Confident increase"),
+    median_APC_increasing = median(APC_equivalent[trend_confidence == "Confident increase"]),
+    median_APC_decreasing = median(APC_equivalent[trend_confidence == "Confident decrease"]),
+    .groups = "drop"
+  )
+print(rigi_tier1_v2)
+
+# Tier 2, redone
+rigi_tier2_v2 <- rigi_resistance_stable %>%
+  filter(stable_estimate) %>%
+  group_by(target_category, Continent) %>%
+  summarise(
+    n_stable = n(),
+    pct_increasing = 100 * mean(trend_confidence == "Confident increase"),
+    median_APC_increasing = median(APC_equivalent[trend_confidence == "Confident increase"]),
+    median_APC_decreasing = median(APC_equivalent[trend_confidence == "Confident decrease"]),
+    .groups = "drop"
+  ) %>%
+  arrange(target_category, desc(pct_increasing))
+print(rigi_tier2_v2, n = 30)
+```
+
+```{r}
+# ============================================================
+# Table 3 — final kappa/agreement summary, by source, restricted
+# to pairs where kappa is actually a meaningful metric
+# ============================================================
+
+table3_summary <- step1_flagged %>%
+  filter(flag_reason == "OK for kappa validation") %>%
+  group_by(Source.Database) %>%
+  summarise(
+    n_pairs = n(),
+    median_kappa = median(kappa, na.rm = TRUE),
+    mean_kappa = mean(kappa, na.rm = TRUE),
+    pct_kappa_above_0.6 = 100 * mean(kappa >= 0.6, na.rm = TRUE),
+    median_raw_agreement = median(raw_agreement, na.rm = TRUE)
+  )
+
+print(table3_summary)
+
+# Secondary: the "Extreme prevalence" subset, reported via raw
+# agreement instead of kappa (per the earlier diagnosis that
+# kappa is unstable at extreme base rates)
+table3_extreme_prevalence <- step1_flagged %>%
+  filter(flag_reason == "Extreme prevalence (kappa unstable)") %>%
+  group_by(Source.Database) %>%
+  summarise(
+    n_pairs = n(),
+    median_raw_agreement = median(raw_agreement, na.rm = TRUE)
+  )
+
+print(table3_extreme_prevalence)
+```
+```{r}
+# ============================================================
+# Export all RIGI tables to a single Excel workbook, one sheet
+# per table, with footnotes below each table
+# ============================================================
+
+if (!require("openxlsx")) install.packages("openxlsx")
+library(openxlsx)
+
+wb <- createWorkbook()
+
+write_table_with_footnote <- function(wb, sheet_name, data, footnote) {
+  addWorksheet(wb, sheet_name)
+  writeData(wb, sheet_name, data, startRow = 1)
+  footnote_row <- nrow(data) + 3
+  writeData(wb, sheet_name, footnote, startRow = footnote_row, startCol = 1)
+  addStyle(wb, sheet_name, style = createStyle(textDecoration = "italic", fontSize = 9),
+           rows = footnote_row, cols = 1)
+  setColWidths(wb, sheet_name, cols = 1:ncol(data), widths = "auto")
+}
+
+# Table 2 — cell coverage (rebuild from cell_aggregates if not already saved)
+table2 <- cell_aggregates %>%
+  group_by(Continent) %>%
+  summarise(n_cells = n(), n_organism_antibiotic_pairs = n_distinct(paste(analysis_unit, Antibiotic))) %>%
+  arrange(desc(n_cells))
+write_table_with_footnote(wb, "Table2_cell_coverage", table2,
+  "Organism x antibiotic x continent x year cells meeting the N>=50 aggregation threshold.")
+
+# Table 3 — EM validation (both subsets)
+write_table_with_footnote(wb, "Table3a_kappa_valid", table3_summary,
+  "Restricted to organism-antibiotic-source pairs with genuine bimodal MIC structure (n=707 pairs total, excludes 319 near-unimodal pairs and 227 extreme-prevalence pairs -- see Table3b).")
+write_table_with_footnote(wb, "Table3b_extreme_prevalence", table3_extreme_prevalence,
+  "Pairs where CLSI-label prevalence is <5% or >95%; kappa is statistically unstable at this base rate, so raw agreement is reported instead.")
+
+# Table 4 — hierarchical model convergence (rebuild from progress log)
+table4 <- data.frame(
+  Metric = c("Organism-antibiotic pairs attempted", "Total estimates extracted",
+             "Confident increase", "Confident decrease", "Direction uncertain"),
+  Value = c(nrow(pairs_to_fit), nrow(rigi_resistance_final),
+            sum(rigi_resistance_final$trend_confidence == "Confident increase"),
+            sum(rigi_resistance_final$trend_confidence == "Confident decrease"),
+            sum(rigi_resistance_final$trend_confidence == "Direction uncertain"))
+)
+write_table_with_footnote(wb, "Table4_model_convergence", table4,
+  "Trend estimates from the primary hierarchical logistic model (random intercept, country nested in continent). 'Confident' requires the 95% CI to exclude zero.")
+
+# Table 5 — Tier 1 (final, outlier-robust)
+write_table_with_footnote(wb, "Table5_Tier1", rigi_tier1_v2,
+  "Restricted to stable estimates (direction-confident AND 95% CI width <100 percentage points). Median (not mean) APC used -- see manuscript Methods for rationale. Investment share is mean documented public/philanthropic R&D funding share, 2014-2024, organism-level only (antibiotic-class granularity not supported by GLOBAL data -- see Limitations).")
+
+# Table 6 — Tier 2 (final, outlier-robust)
+write_table_with_footnote(wb, "Table6_Tier2", rigi_tier2_v2,
+  "Continent-level breakdown, same stability filter and median-based metric as Table 5. Cells with N<10 (e.g. A. baumannii Africa, n=6) should be interpreted cautiously given small sample size.")
+
+saveWorkbook(wb, "RIGI_all_tables.xlsx", overwrite = TRUE)
+cat("Saved: RIGI_all_tables.xlsx\n")
+```
+
+
+```{r}
+# Confirm A3 isolates are genuinely present throughout, not just
+# in the validation step
+
+combined_filtered %>% count(Source.Database)
+
+em_long_primary %>% count(Source.Database)
+
+cell_aggregates_check <- em_long_primary %>%
+  distinct(analysis_unit, Antibiotic, Continent, Year) %>%
+  nrow()
+cat("Sanity: cell_aggregates should be built from all sources pooled -", cell_aggregates_check, "cells\n")
+```
+
